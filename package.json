@@ -1,0 +1,27 @@
+{
+  "name": "popupguard-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:chrome": "vite build",
+    "build:firefox": "vite build && node scripts/use-firefox-manifest.mjs",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "eslint": "^9.21.0",
+    "globals": "^15.15.0",
+    "vitest": "^2.1.8",
+    "vite": "^5.4.14"
+  }
+}

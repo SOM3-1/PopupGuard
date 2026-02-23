@@ -15,9 +15,7 @@
       "cookie",
       "cookies",
       "consent",
-      "privacy",
-      "gdpr",
-      "tracking"
+      "gdpr"
     ],
     promo: [
       "newsletter",
@@ -110,9 +108,13 @@
   let lastScanAt = 0;
   let scheduled = false;
   let cleanupIntervalsStarted = false;
+  let lastUserIntentAt = 0;
+  let hasUserInteracted = false;
   const recentActions = new WeakMap();
+  const userLockedContainers = new WeakMap();
   const DEBUG = false;
   const DEBUG_STORAGE_KEY = "popupguardLastAction";
+  const USER_INTENT_GRACE_MS = 1500;
 
   function normalizeSettings(raw) {
     return {
@@ -226,6 +228,32 @@
     console.debug("[PopupGuard]", ...args);
   }
 
+  function noteUserIntent() {
+    lastUserIntentAt = Date.now();
+    hasUserInteracted = true;
+  }
+
+  function isWithinUserIntentGraceWindow() {
+    return Date.now() - lastUserIntentAt < USER_INTENT_GRACE_MS;
+  }
+
+  function lockUserInteractedContainer(container, reason = "user-intent") {
+    if (!(container instanceof HTMLElement)) return;
+    userLockedContainers.set(container, { ts: Date.now(), reason });
+    debugLog("Locked user modal", reason, container);
+  }
+
+  function isUserLockedContainer(container) {
+    if (!(container instanceof HTMLElement)) return false;
+    const lock = userLockedContainers.get(container);
+    if (!lock) return false;
+    if (!getVisible(container)) {
+      userLockedContainers.delete(container);
+      return false;
+    }
+    return true;
+  }
+
   function recordDebugAction(payload) {
     const entry = {
       host: location.hostname,
@@ -251,7 +279,9 @@
         : "";
     const combined = `${text} ${attrs} ${iframeMeta}`;
 
-    const cookieish = hasAny(combined, TEXT.cookie) || hasAny(attrs, ["cookie", "consent"]);
+    const hasCookieCore = hasAny(combined, TEXT.cookie) || hasAny(attrs, ["cookie", "consent"]);
+    const hasCookieSecondary = hasAny(combined, ["privacy", "tracking", "preference center"]);
+    const cookieish = hasCookieCore || (hasCookieSecondary && hasAny(attrs, ["cookie", "consent", "onetrust", "didomi", "truste", "trustarc", "cookiebot"]));
     const authish = hasAny(combined, TEXT.auth) || hasAny(attrs, ["login", "signin", "auth"]);
     const promoish =
       hasAny(combined, TEXT.promo) ||
@@ -330,6 +360,29 @@
     if (dialogish) return true;
     if (hinted && area <= viewportArea * 0.95) return true;
     return false;
+  }
+
+  function findUserModalCandidatesFromTarget(target) {
+    const results = [];
+    let node = target instanceof Element ? target : null;
+    let depth = 0;
+
+    while (node && depth < 10) {
+      if (node instanceof HTMLElement && getVisible(node)) {
+        if (looksLikeOverlayContainer(node) || node.getAttribute("role") === "dialog") {
+          results.push(node);
+        }
+      }
+      node = node.parentElement;
+      depth += 1;
+    }
+
+    return results;
+  }
+
+  function markUserInteractedModalFromTarget(target) {
+    const candidates = findUserModalCandidatesFromTarget(target);
+    candidates.forEach((container) => lockUserInteractedContainer(container, "event-target"));
   }
 
   function isLikelyAuthRoute() {
@@ -821,6 +874,12 @@
     if (kind === "cookies" && (settings.cookieMode || "strict") === "off") return false;
     if (!canActOnContainer(container, kind)) return false;
 
+    if (isUserLockedContainer(container)) return false;
+    if (isWithinUserIntentGraceWindow()) {
+      lockUserInteractedContainer(container, "grace-window");
+      return false;
+    }
+
     if (isLikelyChatWidget(container)) return false;
     if ((kind === "auth" || kind === "promo") && isLikelyAuthRoute()) return false;
 
@@ -883,6 +942,7 @@
   function scanAndDismiss() {
     if (!settings.enabled) return;
     if (isWhitelisted(location.hostname)) return;
+    if (hasUserInteracted) return;
 
     const containers = findLikelyContainers();
     let changed = false;
@@ -913,12 +973,12 @@
     }
   }
 
-  function scheduleScan() {
+  function scheduleScan(immediate = false) {
     if (scheduled) return;
     scheduled = true;
 
     const now = Date.now();
-    const wait = Math.max(0, 150 - (now - lastScanAt));
+    const wait = immediate ? 0 : Math.max(0, 60 - (now - lastScanAt));
 
     window.setTimeout(() => {
       scheduled = false;
@@ -938,7 +998,7 @@
 
   async function init() {
     await loadSettings();
-    scheduleScan();
+    scheduleScan(true);
 
     if (observer) observer.disconnect();
     observer = new MutationObserver(() => {
@@ -953,15 +1013,22 @@
       attributeFilter: ["class", "style", "aria-hidden", "open"]
     });
 
-    window.addEventListener("load", scheduleScan, { once: true });
-    document.addEventListener("DOMContentLoaded", scheduleScan, { once: true });
-    document.addEventListener("click", () => {
-      window.setTimeout(scheduleScan, 100);
+    window.addEventListener("load", () => scheduleScan(true), { once: true });
+    document.addEventListener("DOMContentLoaded", () => scheduleScan(true), { once: true });
+    document.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      noteUserIntent();
+      markUserInteractedModalFromTarget(event.target);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (!event.isTrusted) return;
+      noteUserIntent();
+      markUserInteractedModalFromTarget(event.target);
     });
 
     if (!cleanupIntervalsStarted) {
       cleanupIntervalsStarted = true;
-      [500, 1200, 2500, 5000, 9000].forEach((ms) => {
+      [80, 180, 400, 900, 1800, 3500, 7000].forEach((ms) => {
         window.setTimeout(scheduleScan, ms);
       });
     }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PopupGuard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Auto-close promo, sign-in, and cookie popups with per-type toggles and a whitelist.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["<all_urls>"],
